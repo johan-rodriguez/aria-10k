@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Project caches and logs
+.pytest_cache/
+*.log
+*.pid
+.DS_Store
+
+# Exclude local data and vector stores but keep structure via .gitkeep
+data/*
+!data/.gitkeep
+vector_store/*
+!vector_store/.gitkeep

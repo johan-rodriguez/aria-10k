@@ -1,0 +1,122 @@
+{
+  "project": "aria-10k",
+  "description": "SEC 10-K Autonomous Risk Analyzer — Multi-agent pipeline with LangGraph + LangChain + LangSmith",
+  "phases": [
+    {
+      "id": "phase_1a_project_setup",
+      "phase": 1,
+      "name": "Phase 1a: Project Setup & Environment",
+      "priority": "MUST",
+      "description": "Initialize the project scaffold: create requirements.txt with all core dependencies (langchain, langgraph, langsmith, chromadb, pinecone-client, sentence-transformers, streamlit, sec-edgar-downloader), create .env.example with all required keys and mode flags (USE_LOCAL_LLM, USE_LOCAL_VECTORDB), and create the src/ directory structure. Verify the .venv activates cleanly and all packages import without error.",
+      "files": ["requirements.txt", ".env.example", "src/__init__.py", "data/.gitkeep", "vector_store/.gitkeep"],
+      "acceptance_criteria": [
+        "All packages install from requirements.txt without conflicts",
+        ".env.example documents every required env var with inline comments",
+        "src/ directory exists with __init__.py",
+        "No import errors when running: python -c 'import langchain, langgraph, langsmith, chromadb, streamlit'"
+      ],
+      "passes": true
+    },
+    {
+      "id": "phase_1b_data_ingestion",
+      "phase": 1,
+      "name": "Phase 1b: Data Ingestion Pipeline (EDGAR → ChromaDB)",
+      "priority": "MUST",
+      "description": "Implement src/ingestion.py with a factory pattern. The module must: (1) download a 10-K from the SEC EDGAR API for a given ticker using sec-edgar-downloader, extracting the 'Risk Factors' section; (2) split the text with RecursiveCharacterTextSplitter (chunk_size=1000, overlap=200); (3) embed with HuggingFaceEmbeddings (all-MiniLM-L6-v2); (4) store in ChromaDB if USE_LOCAL_VECTORDB=true, or Pinecone if false. Export a get_vectorstore(ticker: str) -> VectorStore factory function; (5) implement validate_ticker(ticker: str) -> tuple[bool, str] to check ticker validity and resolve it to a company name. All external API calls must be mocked in tests.",
+      "files": ["src/ingestion.py", "src/tests/test_ingestion.py"],
+      "acceptance_criteria": [
+        "get_vectorstore('AAPL') returns a populated ChromaDB collection in local mode",
+        "get_vectorstore() respects USE_LOCAL_VECTORDB env flag",
+        "validate_ticker('AAPL') returns (True, 'Apple Inc.') using mocked or local EDGAR lookup",
+        "validate_ticker('INVALID') returns (False, '')",
+        "Text is correctly chunked (chunks ~1000 tokens, with overlap)",
+        "pytest src/tests/test_ingestion.py passes with mocked EDGAR API and mocked ChromaDB",
+        "No hardcoded API keys or file paths in the source code"
+      ],
+      "passes": true
+    },
+    {
+      "id": "phase_2a_state_and_llm_factory",
+      "phase": 2,
+      "name": "Phase 2a: LangGraph State Schema & LLM Factory",
+      "priority": "MUST",
+      "description": "Implement the foundational constructs for the multi-agent graph. In src/graph.py, define the TypedDict state schema with fields: empresa (str), ticker (str), riesgos_extraidos (list[str]), auditoria (list[str]), aprobado_por_humano (bool), reporte_final (str). In src/agents.py, implement the get_llm() factory function that returns OllamaLLM if USE_LOCAL_LLM=true, or ChatOpenAI/ChatAnthropic if false, reading model name from env vars. All functions must have full type hints.",
+      "files": ["src/graph.py", "src/agents.py", "src/tests/test_state.py"],
+      "acceptance_criteria": [
+        "AriaState TypedDict is importable from src/graph.py",
+        "get_llm() returns correct LLM class based on USE_LOCAL_LLM env var",
+        "get_llm() raises a clear ValueError if neither local nor cloud is configured",
+        "pytest src/tests/test_state.py passes, verifying state field types and LLM factory switching"
+      ],
+      "passes": true
+    },
+    {
+      "id": "phase_2b_agent_nodes",
+      "phase": 2,
+      "name": "Phase 2b: Agent Nodes (Risk Extractor, Compliance Auditor, Executive Summarizer)",
+      "priority": "MUST",
+      "description": "Implement the 3 core agent nodes in src/agents.py. Each node receives state: AriaState and returns a partial dict with only the keys it updates. (1) risk_extractor_node: uses get_vectorstore() + get_llm() via RAG to extract the top-5 financial, operational, or legal risks from the 10-K. Returns {riesgos_extraidos: list[str]}. (2) compliance_auditor_node: receives riesgos_extraidos, evaluates each risk against a simulated investment policy prompt, and flags high-severity items. Returns {auditoria: list[str]}. (3) executive_summarizer_node: takes approved audited data and produces a structured executive report. Returns {reporte_final: str}. All LLM calls must be traced via LangSmith.",
+      "files": ["src/agents.py", "src/tests/test_agents.py"],
+      "acceptance_criteria": [
+        "Each node function is independently callable with a mock state dict",
+        "risk_extractor_node returns a list of 5 risk strings (mocked LLM)",
+        "compliance_auditor_node returns a list of audit comments (mocked LLM)",
+        "executive_summarizer_node returns a non-empty string report (mocked LLM)",
+        "All nodes return only partial state (not the full AriaState dict)",
+        "pytest src/tests/test_agents.py passes with all LLM calls mocked via pytest-mock"
+      ],
+      "passes": true
+    },
+    {
+      "id": "phase_2c_graph_wiring",
+      "phase": 2,
+      "name": "Phase 2c: LangGraph StateGraph Wiring & Human-in-the-Loop",
+      "priority": "MUST",
+      "description": "Wire all nodes into a compiled StateGraph in src/graph.py. The graph must include: a data_fetcher node (calls ingestion.py), then risk_extractor, compliance_auditor, an interrupt point interrupt_before=['executive_summarizer'], and finally executive_summarizer. Export a compiled graph object as `graph = workflow.compile(checkpointer=MemorySaver(), interrupt_before=['executive_summarizer'])`. Write an integration test that runs the graph up to the interrupt, verifies state, resumes it with update_state(), and confirms reporte_final is populated.",
+      "files": ["src/graph.py", "src/tests/test_graph.py"],
+      "acceptance_criteria": [
+        "graph.invoke({'ticker': 'AAPL', 'empresa': 'Apple Inc.'}, config) runs without error (mocked LLMs and EDGAR)",
+        "Graph pauses at interrupt_before=['executive_summarizer'] — confirmed via graph.get_state(config).next == ('executive_summarizer',)",
+        "graph.update_state(config, {'aprobado_por_humano': True}) successfully resumes execution",
+        "reporte_final is a non-empty string after graph completes",
+        "pytest src/tests/test_graph.py passes with full mocked pipeline"
+      ],
+      "passes": true
+    },
+    {
+      "id": "phase_3_langsmith_evals",
+      "phase": 3,
+      "name": "Phase 3: LangSmith Observability & Faithfulness Evals",
+      "priority": "MUST",
+      "description": "Integrate LangSmith tracing and create an evaluation harness. (1) Verify LANGCHAIN_TRACING_V2=true and LANGCHAIN_PROJECT=aria-10k are read from .env and that all graph node executions appear as traces in LangSmith. (2) In src/evals.py, create a LangSmith dataset named 'aria-10k-risk-evals' with at least 5 question/answer pairs about 10-K risk factors (e.g., 'What are Apple supply chain risks?'). (3) Implement a run_faithfulness_eval() function using langsmith.evaluate() with a Faithfulness criteria evaluator. The function must return average score and raise an alert if score < 0.85.",
+      "files": ["src/evals.py", "src/tests/test_evals.py"],
+      "acceptance_criteria": [
+        "Running the graph creates visible traces in the LangSmith project 'aria-10k'",
+        "LangSmith dataset 'aria-10k-risk-evals' exists with >= 5 examples",
+        "run_faithfulness_eval() returns a score between 0 and 1",
+        "Function raises ValueError or logs a warning if Faithfulness score < 0.85",
+        "pytest src/tests/test_evals.py passes with mocked langsmith.Client"
+      ],
+      "passes": true
+    },
+    {
+      "id": "phase_4_streamlit_ui",
+      "phase": 4,
+      "name": "Phase 4: Streamlit UI, Real-Time Status & Human-in-the-Loop Gate",
+      "priority": "MUST",
+      "description": "Build app.py as the Streamlit frontend. Required components: (1) Sidebar: text input for ticker symbol, local/cloud mode selector via radio buttons, and an 'Analyze' button. The ticker symbol must be validated via validate_ticker(ticker) before executing the graph. (2) Main panel: pipeline status widget showing each node as Pending/Running/Completed/Error using st.status containers, updated via st.rerun() polling. (3) Human-in-the-Loop gate: when graph.get_state(config).next == ('executive_summarizer',), display the extracted risks and audit in a readable format (st.table or markdown), and show two prominent buttons: '✅ Approve & Generate Report' and '🔄 Reject & Re-evaluate'. Buttons must be disabled when the graph is not paused. (4) Final report panel: render reporte_final as structured markdown with a download button (.md format). (5) Disclaimer: visible banner — 'This analysis is for informational purposes only. It does not constitute financial or legal advice.' (addresses LEG-01, LEG-03).",
+      "files": ["app.py", "src/tests/test_app.py"],
+      "acceptance_criteria": [
+        "Streamlit app launches without error: streamlit run app.py",
+        "Entering 'AAPL' and clicking Analyze triggers the pipeline and shows agent status updates",
+        "Entering an invalid ticker shows a clear error message in the UI and does not trigger the graph",
+        "Approve/Reject buttons are only active when the graph is paused at the interrupt point",
+        "Clicking Approve resumes the graph and renders the final report in markdown",
+        "Disclaimer banner is visible on every page load",
+        "Mode selector (local/cloud) correctly sets USE_LOCAL_LLM and USE_LOCAL_VECTORDB at runtime",
+        "Download button produces a valid .md file with the final report content"
+      ],
+      "passes": true
+    }
+  ]
+}
